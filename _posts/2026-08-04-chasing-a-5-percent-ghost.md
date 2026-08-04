@@ -46,11 +46,12 @@ modem for). I watched the 3.3&nbsp;V rail the whole time.
 
 Nothing. Not a single dip below 3.2&nbsp;V. I stacked on CPU, memory, and USB
 disk load. The rail sagged a *whopping* 70&nbsp;mV under everything I threw at
-it. The good board's power delivery was, frankly, excellent.
+it. On the bench, with no antenna, the board's power delivery looked excellent.
 
-That's a useful non-result: **the crash is not a generic design flaw.** If
-every board did this, all 1800 would be dropping. Something separated the 5%
-from the 95%.
+That sent me down a wrong turn: *maybe the failing units are simply worse boards.*
+It's the obvious hypothesis — a bad-hardware subset would neatly explain a 5%
+rate. Hold that thought; it turns out to be exactly the wrong frame, and seeing
+why is the whole point of this story.
 
 ## Building a rig that tells the truth
 
@@ -85,24 +86,25 @@ clue, not a culprit. Yet.
 > **control** on the *same* board, and the firmware under-voltage alarm
 > (`hwmon .../in0_lcrit_alarm`) is logged alongside as an independent check.
 
-## The breakthrough: an *aged* board
+## The breakthrough: it's not the board, it's the margin
 
-Then I swapped in an **older board** with the same CM3+ module, and measured the
-same +3.3&nbsp;V rail at idle:
+My first instinct was that the failing units were somehow *worse* — degraded caps,
+a weaker regulator, wear. So I compared boards. Newer boards were indeed quieter at
+idle (~38&nbsp;mV of +3.3&nbsp;V ripple) than well-used ones (closer to
+~90&nbsp;mV). Tempting story: aging.
 
-- Good board: **38 mV** of ripple.
-- Aged board: **92 mV** of ripple — roughly **2.4× noisier**, and sitting
-  ~50&nbsp;mV lower.
+But it didn't hold. When I ran the modem-reset test, **every board dipped** — new
+and old alike. The newer boards started from a quieter baseline, yet the modem
+reconnect still pulled their +3.3&nbsp;V rail down by hundreds of millivolts, right
+alongside the older ones. This was never a bad-board subset. It's a **rail
+design-margin problem that affects the whole fleet**: the +3.3&nbsp;V rail simply
+sits too close to the SoC's brown-out threshold to absorb the modem's reconnect
+inrush with room to spare.
 
-That's the fingerprint of **degraded decoupling** — aging capacitors and/or a
-weaker regulator. And when I ran the exact same modem-reset test that the good
-board shrugged off, the aged board behaved completely differently:
-
-![Good board is immune; the aged board dips on every modem reset](/assets/chart-good-vs-aged.png)
-
-*Seven of ten modem resets pulled the aged board's +3&nbsp;V rail down to
-~3.0&nbsp;V — a 360&nbsp;mV dip — while the good board never moved.* The variable
-was never the modem. It was **board aging.**
+That reframes the entire question. If all boards dip, why do only ~5% crash? The
+answer — which the rest of this post nails down — is **coincidence**: the dip alone
+is survivable; it only crashes when it lands *at the same instant* as another
+current-drawing operation.
 
 ## The antenna: with vs. without
 
@@ -112,23 +114,23 @@ network and, crucially, never transmitted. That means it never drew the big
 **RF power-amplifier current** that a real, transmitting modem pulls when it
 re-registers on a tower after a dropout.
 
-So I ran the aged-board modem-reset test **twice**: once with no antenna, and
-once with an antenna attached and the modem actually registered on a live
-network (real RF-TX current during each reconnect).
+So I ran the modem-reset test **twice**: once with no antenna, and once with an
+antenna attached and the modem actually registered on a live network (real RF-TX
+current during each reconnect).
 
 ![Antenna pushes the dips deeper](/assets/chart-antenna-vs-noantenna.png)
 
 | Condition | Dips (of 10) | Worst +3V |
 |---|---|---|
-| Aged board, **no antenna** | 7 | 3.026 V |
-| Aged board, **with antenna** | 7 | **3.012 V** |
+| **No antenna** | 7 | 3.026 V |
+| **With antenna** | 7 | **3.012 V** |
 
 The antenna consistently added **another 15–30&nbsp;mV of sag** on the deepest
 cycles. On its own that sounds tiny — but it's directional and it's real: the
-RF-TX registration burst is genuine extra load on the same weak rail, and it
-reliably walks the minimum *down*, toward the edge. Without the antenna I could
-characterize the mechanism; **with** the antenna I could see the last stressor
-the field actually applies.
+RF-TX registration burst is genuine extra load on the rail, and it reliably walks
+the minimum *down*, toward the edge. Without the antenna I could characterize the
+mechanism; **with** the antenna I could see the last stressor the field actually
+applies.
 
 The no-antenna test is not a throwaway. It isolates the modem's *digital/USB*
 inrush from its *RF* inrush. The gap between the grey and green traces above is,
@@ -143,7 +145,7 @@ modem reset **and** the board was under load. Which one actually matters? To
 answer that like a scientist, you hold everything constant and vary **one**
 factor at a time.
 
-So I designed two mutually-exclusive scenarios on the **same aged board**:
+So I designed two mutually-exclusive scenarios on the **same board**:
 
 - **Scenario A — "load is not the problem."** Antenna **detached** (zero RF
   activity), **no modem reset**, but 10 minutes of heavy CPU + memory + I/O
@@ -351,9 +353,9 @@ GRUB menu**, waiting for a keypress that, in the field, no one is there to press
 
 The whole chain, reproduced end to end:
 
-> aged board → weak, noisy +3&nbsp;V rail → 4G reconnect RF-TX inrush + SoC load
-> → +3&nbsp;V brown-out below ~2.8&nbsp;V → eMMC path dies while the kernel lives
-> → "zombie" / GRUB halt → **"unusable, swap it."**
+> thin +3&nbsp;V design margin (every board) → 4G reconnect RF-TX inrush **+ a
+> coincident operation** → +3&nbsp;V brown-out below ~2.8&nbsp;V → eMMC path dies
+> while the kernel lives → "zombie" / GRUB halt → **"unusable, swap it."**
 
 ## The tempting fix — and the lie
 
@@ -393,24 +395,31 @@ cause.
 
 ## What was actually true
 
-The root cause is **electrical, not software**: aged +3&nbsp;V decoupling on a
-subset of boards lets the modem-reconnect inrush (worse with a real transmitting
-antenna, worse still under load) drag the rail below the SoC's brown-out
-threshold. The only reliable fix lives in hardware — restore the +3&nbsp;V margin
-with bulk/decoupling capacitance or a stronger regulator so the rail never
-reaches the danger zone.
+The root cause is **electrical, not software, and it affects every board** — not a
+worse-hardware subset. The +3&nbsp;V rail is designed with too little margin: the
+modem-reconnect inrush (worse with a real transmitting antenna) drags it hundreds of
+millivolts down on *any* board. That dip alone is survivable. It becomes a **brown-out
+crash only when it coincides with another current-drawing operation** — a compute burst,
+storage I/O, a critical eMMC access — happening at the same instant.
 
-Software can *reduce* corruption and *automate* recovery, but it cannot prevent a
-processor brown-out. And there's a bonus: because aging shows up as **elevated
-idle ripple** (~90&nbsp;mV vs ~38&nbsp;mV), you can *screen* boards and replace
-the risky ones **before** they fail in the field, instead of after.
+That coincidence is exactly what the "5%" measures. Across 115 bench reconnect cycles
+(58 of which dipped), 4 tipped into a brown-out crash — **≈ 7% per dip**, right in line
+with the field's ~5%. In other words: *in roughly one dip in twenty, the timing lines up
+and the board dies.* It's a rail sitting a hair above the cliff, pushed over only when
+the reconnect and some other work land together.
+
+The only reliable fix lives in hardware — restore the +3&nbsp;V margin fleet-wide with
+bulk/decoupling capacitance or a stronger regulator so the reconnect inrush, even stacked
+with a coincident operation, can't reach the brown-out threshold. Software can *reduce*
+the odds of coincidence (quiesce the device around reconnect) and *automate* recovery,
+but it cannot prevent a processor brown-out.
 
 ## The lesson I'm keeping
 
 The eMMC-freeze idea taught me more than the fix would have. For a probabilistic
 failure, **a single passing run is not evidence** — it's an anecdote wearing a
 lab coat. It took a boring, controlled A/B to separate a real effect from a
-lucky streak, and it saved a wrong fix from shipping to 1800 devices.
+lucky streak, and it saved a wrong fix from shipping to the whole fleet.
 
 Measure the rail. Distrust the good result. Chase the ghost all the way down.
 
