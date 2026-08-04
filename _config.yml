@@ -1,0 +1,34 @@
+title: Du7 Engineering Blog
+description: >-
+  Deep technical write-ups on infrastructure, cloud, and IoT — from
+  Raspberry Pi hardware debugging to AWS Greengrass.
+author: Eduardo Elias
+url: "https://blog.du7.dev"
+baseurl: ""
+
+# Build settings
+markdown: kramdown
+highlighter: rouge
+permalink: /:year/:month/:day/:title/
+
+# Kramdown options
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Exclude the legacy content and repo meta from the build
+exclude:
+  - en-uk/
+  - pt-br/
+  - README.md
+  - .vscode/
+  - Gemfile
+  - Gemfile.lock
+  - make_charts.py
+  - make_scenario_chart.py
+  - "**/__pycache__/"
+
+# Plugins available on GitHub Pages
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
